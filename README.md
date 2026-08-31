@@ -1,18 +1,15 @@
 # HTTP Proxy Service
 
-Proxy HTTP simple y seguro, desplegable en Render.
+Proxy HTTP/HTTPS con soporte CONNECT, desplegable en Railway.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Carlosdev-cod/http-proxy-service)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new?template=https://github.com/Carlosdev-cod/http-proxy-service)
 
 ## Características
 
-- Proxy HTTP/HTTPS
-- Rate limiting integrado
+- Proxy HTTP/HTTPS completo
+- CONNECT method (túnel HTTPS)
 - Health check endpoint
-- Seguridad con Helmet
-- CORS habilitado
-- Logging con Winston
-- Despliegue en Render con Docker
+- Despliegue en Railway
 
 ## Endpoints
 
@@ -20,38 +17,33 @@ Proxy HTTP simple y seguro, desplegable en Render.
 |--------|------|-------------|
 | GET | `/` | Información del servicio |
 | GET | `/health` | Health check |
-| GET | `/proxy?url=URL` | Proxear una URL |
 
 ## Uso
 
-### Request básico
+### HTTP Proxy
 
 ```bash
-curl "https://tu-dominio.com/proxy?url=https://httpbin.org/get"
+curl -x https://tu-app.up.railway.app http://httpbin.org/get
 ```
 
-### Variables de entorno
+### HTTPS (CONNECT)
 
-| Variable | Descripción | Default |
-|----------|-------------|---------|
-| `PORT` | Puerto del servidor | `3000` |
-| `RATE_LIMIT_WINDOW_MS` | Ventana de rate limit (ms) | `60000` |
-| `RATE_LIMIT_MAX_REQUESTS` | Max requests por ventana | `100` |
-| `DEBUG` | Modo debug | `false` |
+```bash
+curl -x https://tu-app.up.railway.app https://httpbin.org/get
+```
 
-## Despliegue en Render
+## Despliegue en Railway
 
-1. Sube el código a tu repositorio
-2. Conecta el repo en Render
-3. Render detecta el `render.yaml` automáticamente
-4. Agrega tu dominio personalizado en Settings
+1. Toca el botón de arriba
+2. Railway despliega automáticamente
+3. Obtuene tu URL: `https://tu-app.up.railway.app`
+4. Configura tu app con ese host y puerto 443
 
 ## Desarrollo local
 
 ```bash
 npm install
-cp .env.example .env
-npm run dev
+node src/server.js
 ```
 
 ## Licencia

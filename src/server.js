@@ -1,12 +1,8 @@
-require('dotenv').config();
 const http = require('http');
 const net = require('net');
-const { WebSocketServer } = require('ws');
-const logger = require('./utils/logger');
 
 const PORT = process.env.PORT || 3000;
 
-// Servidor HTTP base
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -18,83 +14,70 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       service: 'HTTP Proxy Service',
-      version: '2.0.0',
-      status: 'running',
-      mode: 'websocket-tunnel'
+      version: '3.0.0',
+      status: 'running'
     }));
     return;
   }
 
-  res.writeHead(404);
-  res.end('Not Found');
+  console.log(`[HTTP] ${req.method} ${req.url}`);
+
+  try {
+    const parsedUrl = new URL(req.url);
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 80,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: req.method,
+      headers: { ...req.headers, host: parsedUrl.hostname }
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('error', (err) => {
+      console.error(`[ERROR] ${err.message}`);
+      res.writeHead(502);
+      res.end('Bad Gateway');
+    });
+
+    req.pipe(proxyReq);
+  } catch (err) {
+    res.writeHead(400);
+    res.end('Bad Request');
+  }
 });
 
-// WebSocket para tunelizar conexiones
-const wss = new WebSocketServer({ server });
+server.on('connect', (req, clientSocket, head) => {
+  const [hostname, port] = req.url.split(':');
+  const targetPort = parseInt(port) || 443;
 
-wss.on('connection', (ws) => {
-  logger.info('WebSocket client conectado');
+  console.log(`[CONNECT] ${hostname}:${targetPort}`);
 
-  let targetSocket = null;
-  let connected = false;
-
-  ws.on('message', (data) => {
-    const msg = data.toString();
-
-    // Primer mensaje: host:port del destino
-    if (!connected) {
-      const [host, port] = msg.split(':');
-      const targetPort = parseInt(port) || 443;
-
-      logger.info(`Tunnel a ${host}:${targetPort}`);
-
-      targetSocket = net.connect(targetPort, host, () => {
-        connected = true;
-        ws.send('CONNECTED');
-        logger.info(`Conectado a ${host}:${targetPort}`);
-      });
-
-      targetSocket.on('data', (chunk) => {
-        if (ws.readyState === 1) {
-          ws.send(chunk);
-        }
-      });
-
-      targetSocket.on('error', (err) => {
-        logger.error(`Target error: ${err.message}`);
-        ws.send('ERROR:' + err.message);
-        ws.close();
-      });
-
-      targetSocket.on('close', () => {
-        ws.close();
-      });
-    } else {
-      // Datos para enviar al destino
-      if (targetSocket && !targetSocket.destroyed) {
-        targetSocket.write(data);
-      }
-    }
+  const serverSocket = net.connect(targetPort, hostname, () => {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    serverSocket.write(head);
+    serverSocket.pipe(clientSocket);
+    clientSocket.pipe(serverSocket);
   });
 
-  ws.on('close', () => {
-    if (targetSocket && !targetSocket.destroyed) {
-      targetSocket.destroy();
-    }
-    logger.info('WebSocket client desconectado');
+  serverSocket.on('error', (err) => {
+    console.error(`[CONNECT ERROR] ${err.message}`);
+    clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    clientSocket.end();
   });
 
-  ws.on('error', (err) => {
-    logger.error(`WebSocket error: ${err.message}`);
-    if (targetSocket && !targetSocket.destroyed) {
-      targetSocket.destroy();
-    }
+  clientSocket.on('error', (err) => {
+    console.error(`[CLIENT ERROR] ${err.message}`);
+    serverSocket.end();
   });
 });
 
 server.listen(PORT, () => {
-  logger.info(`Proxy corriendo en puerto ${PORT}`);
-  logger.info(`Modo: WebSocket tunnel`);
+  console.log(`Proxy corriendo en puerto ${PORT}`);
+  console.log(`HTTP + CONNECT (HTTPS tunneling) soportado`);
 });
 
 module.exports = server;
