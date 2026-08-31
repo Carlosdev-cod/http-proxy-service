@@ -1,7 +1,9 @@
 const http = require('http');
+const https = require('https');
 const net = require('net');
+const { URL } = require('url');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
@@ -14,37 +16,47 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       service: 'HTTP Proxy Service',
-      version: '3.0.0',
+      version: '3.1.0',
       status: 'running'
     }));
     return;
   }
 
-  console.log(`[HTTP] ${req.method} ${req.url}`);
+  const targetUrl = req.url;
+  console.log(`[HTTP] ${req.method} ${targetUrl}`);
 
   try {
-    const parsedUrl = new URL(req.url);
+    const parsedUrl = new URL(targetUrl);
+    const isHttps = parsedUrl.protocol === 'https:';
+    const targetPort = parsedUrl.port ? parseInt(parsedUrl.port) : (isHttps ? 443 : 80);
+
     const options = {
       hostname: parsedUrl.hostname,
-      port: parsedUrl.port || 80,
+      port: targetPort,
       path: parsedUrl.pathname + parsedUrl.search,
       method: req.method,
       headers: { ...req.headers, host: parsedUrl.hostname }
     };
 
-    const proxyReq = http.request(options, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    const transport = isHttps ? https : http;
+    const proxyReq = transport.request(options, (proxyRes) => {
+      const headers = { ...proxyRes.headers };
+      delete headers['transfer-encoding'];
+      res.writeHead(proxyRes.statusCode, headers);
       proxyRes.pipe(res);
     });
 
     proxyReq.on('error', (err) => {
       console.error(`[ERROR] ${err.message}`);
-      res.writeHead(502);
-      res.end('Bad Gateway');
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end('Bad Gateway: ' + err.message);
+      }
     });
 
     req.pipe(proxyReq);
   } catch (err) {
+    console.error(`[PARSE ERROR] ${err.message}`);
     res.writeHead(400);
     res.end('Bad Request');
   }
@@ -69,15 +81,9 @@ server.on('connect', (req, clientSocket, head) => {
     clientSocket.end();
   });
 
-  clientSocket.on('error', (err) => {
-    console.error(`[CLIENT ERROR] ${err.message}`);
-    serverSocket.end();
-  });
+  clientSocket.on('error', () => serverSocket.end());
 });
 
-server.listen(PORT, () => {
-  console.log(`Proxy corriendo en puerto ${PORT}`);
-  console.log(`HTTP + CONNECT (HTTPS tunneling) soportado`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Proxy en puerto ${PORT}`);
 });
-
-module.exports = server;
