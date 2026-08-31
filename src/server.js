@@ -1,58 +1,93 @@
 require('dotenv').config();
-const express = require('express');
-const helmet = require('helmet');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const http = require('http');
+const https = require('https');
+const net = require('net');
+const url = require('url');
 const logger = require('./utils/logger');
-const healthCheck = require('./routes/health');
-const proxyHandler = require('./routes/proxy');
 
-const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Seguridad
-app.use(helmet());
-app.use(cors());
+// Servidor HTTP proxy
+const server = http.createServer((req, res) => {
+  // Health check
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'healthy', uptime: process.uptime() }));
+    return;
+  }
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60000,
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
-  message: { error: 'Demasiadas peticiones, intenta más tarde.' }
+  // Info endpoint
+  if (req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      service: 'HTTP Proxy Service',
+      version: '1.0.0',
+      status: 'running'
+    }));
+    return;
+  }
+
+  // HTTP Proxy - manejar requests HTTP directos
+  logger.info(`HTTP Proxy: ${req.method} ${req.url}`);
+
+  try {
+    const parsedUrl = new URL(req.url);
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 80,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: req.method,
+      headers: { ...req.headers, host: parsedUrl.hostname }
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('error', (err) => {
+      logger.error(`Proxy error: ${err.message}`);
+      res.writeHead(502);
+      res.end('Bad Gateway');
+    });
+
+    req.pipe(proxyReq);
+  } catch (err) {
+    logger.error(`Request error: ${err.message}`);
+    res.writeHead(400);
+    res.end('Bad Request');
+  }
 });
-app.use(limiter);
 
-// Body parser
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Soporte para CONNECT method (HTTPS tunneling)
+server.on('connect', (req, clientSocket, head) => {
+  const [hostname, port] = req.url.split(':');
+  const targetPort = parseInt(port) || 443;
 
-// Rutas
-app.use('/health', healthCheck);
-app.use('/proxy', proxyHandler);
+  logger.info(`CONNECT: ${hostname}:${targetPort}`);
 
-// Ruta raíz - información del servicio
-app.get('/', (req, res) => {
-  res.json({
-    service: 'HTTP Proxy Service',
-    version: '1.0.0',
-    status: 'running',
-    endpoints: {
-      health: '/health',
-      proxy: '/proxy?url=https://example.com'
-    }
+  const serverSocket = net.connect(targetPort, hostname, () => {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    serverSocket.write(head);
+    serverSocket.pipe(clientSocket);
+    clientSocket.pipe(serverSocket);
+  });
+
+  serverSocket.on('error', (err) => {
+    logger.error(`CONNECT error: ${err.message}`);
+    clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    clientSocket.end();
+  });
+
+  clientSocket.on('error', (err) => {
+    logger.error(`Client socket error: ${err.message}`);
+    serverSocket.end();
   });
 });
 
-// Middleware de errores
-app.use((err, req, res, next) => {
-  logger.error(`Error: ${err.message}`);
-  res.status(500).json({ error: 'Error interno del servidor' });
+server.listen(PORT, () => {
+  logger.info(`HTTP Proxy corriendo en puerto ${PORT}`);
+  logger.info(`Soporta: HTTP proxy + CONNECT (HTTPS tunneling)`);
 });
 
-// Iniciar servidor
-app.listen(PORT, () => {
-  logger.info(`Servidor proxy corriendo en puerto ${PORT}`);
-});
-
-module.exports = app;
+module.exports = server;
