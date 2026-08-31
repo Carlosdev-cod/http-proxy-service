@@ -1,93 +1,100 @@
 require('dotenv').config();
 const http = require('http');
-const https = require('https');
 const net = require('net');
-const url = require('url');
+const { WebSocketServer } = require('ws');
 const logger = require('./utils/logger');
 
 const PORT = process.env.PORT || 3000;
 
-// Servidor HTTP proxy
+// Servidor HTTP base
 const server = http.createServer((req, res) => {
-  // Health check
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'healthy', uptime: process.uptime() }));
     return;
   }
 
-  // Info endpoint
   if (req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       service: 'HTTP Proxy Service',
-      version: '1.0.0',
-      status: 'running'
+      version: '2.0.0',
+      status: 'running',
+      mode: 'websocket-tunnel'
     }));
     return;
   }
 
-  // HTTP Proxy - manejar requests HTTP directos
-  logger.info(`HTTP Proxy: ${req.method} ${req.url}`);
-
-  try {
-    const parsedUrl = new URL(req.url);
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || 80,
-      path: parsedUrl.pathname + parsedUrl.search,
-      method: req.method,
-      headers: { ...req.headers, host: parsedUrl.hostname }
-    };
-
-    const proxyReq = http.request(options, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
-      proxyRes.pipe(res);
-    });
-
-    proxyReq.on('error', (err) => {
-      logger.error(`Proxy error: ${err.message}`);
-      res.writeHead(502);
-      res.end('Bad Gateway');
-    });
-
-    req.pipe(proxyReq);
-  } catch (err) {
-    logger.error(`Request error: ${err.message}`);
-    res.writeHead(400);
-    res.end('Bad Request');
-  }
+  res.writeHead(404);
+  res.end('Not Found');
 });
 
-// Soporte para CONNECT method (HTTPS tunneling)
-server.on('connect', (req, clientSocket, head) => {
-  const [hostname, port] = req.url.split(':');
-  const targetPort = parseInt(port) || 443;
+// WebSocket para tunelizar conexiones
+const wss = new WebSocketServer({ server });
 
-  logger.info(`CONNECT: ${hostname}:${targetPort}`);
+wss.on('connection', (ws) => {
+  logger.info('WebSocket client conectado');
 
-  const serverSocket = net.connect(targetPort, hostname, () => {
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    serverSocket.write(head);
-    serverSocket.pipe(clientSocket);
-    clientSocket.pipe(serverSocket);
+  let targetSocket = null;
+  let connected = false;
+
+  ws.on('message', (data) => {
+    const msg = data.toString();
+
+    // Primer mensaje: host:port del destino
+    if (!connected) {
+      const [host, port] = msg.split(':');
+      const targetPort = parseInt(port) || 443;
+
+      logger.info(`Tunnel a ${host}:${targetPort}`);
+
+      targetSocket = net.connect(targetPort, host, () => {
+        connected = true;
+        ws.send('CONNECTED');
+        logger.info(`Conectado a ${host}:${targetPort}`);
+      });
+
+      targetSocket.on('data', (chunk) => {
+        if (ws.readyState === 1) {
+          ws.send(chunk);
+        }
+      });
+
+      targetSocket.on('error', (err) => {
+        logger.error(`Target error: ${err.message}`);
+        ws.send('ERROR:' + err.message);
+        ws.close();
+      });
+
+      targetSocket.on('close', () => {
+        ws.close();
+      });
+    } else {
+      // Datos para enviar al destino
+      if (targetSocket && !targetSocket.destroyed) {
+        targetSocket.write(data);
+      }
+    }
   });
 
-  serverSocket.on('error', (err) => {
-    logger.error(`CONNECT error: ${err.message}`);
-    clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-    clientSocket.end();
+  ws.on('close', () => {
+    if (targetSocket && !targetSocket.destroyed) {
+      targetSocket.destroy();
+    }
+    logger.info('WebSocket client desconectado');
   });
 
-  clientSocket.on('error', (err) => {
-    logger.error(`Client socket error: ${err.message}`);
-    serverSocket.end();
+  ws.on('error', (err) => {
+    logger.error(`WebSocket error: ${err.message}`);
+    if (targetSocket && !targetSocket.destroyed) {
+      targetSocket.destroy();
+    }
   });
 });
 
 server.listen(PORT, () => {
-  logger.info(`HTTP Proxy corriendo en puerto ${PORT}`);
-  logger.info(`Soporta: HTTP proxy + CONNECT (HTTPS tunneling)`);
+  logger.info(`Proxy corriendo en puerto ${PORT}`);
+  logger.info(`Modo: WebSocket tunnel`);
 });
 
 module.exports = server;

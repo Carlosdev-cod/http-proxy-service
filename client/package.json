@@ -1,0 +1,12 @@
+{
+  "name": "proxy-client",
+  "version": "1.0.0",
+  "description": "Cliente SOCKS5 local que tuneliza por WebSocket",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}
